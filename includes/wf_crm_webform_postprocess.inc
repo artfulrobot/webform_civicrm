@@ -17,6 +17,13 @@ class wf_crm_webform_postprocess extends wf_crm_webform_base {
   private $billing_params = [];
   private $totalContribution = 0;
   private $contributionIsIncomplete = FALSE;
+
+  /**
+   * Is GoCardless
+   *
+   * @var bool
+   */
+  private $isGoCardless = FALSE;
   private $contributionIsPayLater = FALSE;
 
   // During validation this contains an array of known contact ids and the placeholder 0 for valid contacts
@@ -239,6 +246,9 @@ class wf_crm_webform_postprocess extends wf_crm_webform_base {
     drupal_write_record('webform_civicrm_submissions', $record, $this->update);
 
     // Calling an IPN payment processor will result in a redirect so this happens after everything else
+    if ($this->isGoCardless) {
+      $this->contributionIsPayLater = FALSE;
+    }
     if (empty($this->submission->is_draft) && !empty($this->ent['contribution'][1]['id']) && $this->contributionIsIncomplete && !$this->contributionIsPayLater) {
       webform_submission_send_mail($this->node, $this->submission);
       $this->submitIPNPayment();
@@ -1935,15 +1945,19 @@ class wf_crm_webform_postprocess extends wf_crm_webform_base {
       if ($paymentProcessorClassName === 'Payment_Manual') {
         $this->contributionIsPayLater = TRUE;
       }
+      elseif ($paymentProcessorClassName === 'Payment_GoCardless') {
+        $this->isGoCardless = TRUE;
+        $this->contributionIsPayLater = TRUE;
+      }
     }
 
     $params = $this->contributionParams();
     $params['contribution_status_id'] = 'Pending';
-    $params['is_pay_later'] = $this->contributionIsPayLater;
+    $params['is_pay_later'] = $this->isGoCardless ? FALSE : $this->contributionIsPayLater;
 
     $numInstallments = wf_crm_aval($params, 'installments', NULL, TRUE);
     $frequencyInterval = wf_crm_aval($params, 'frequency_unit');
-    if ($numInstallments != 1 && !empty($frequencyInterval) && $this->contributionIsPayLater) {
+    if ($numInstallments != 1 && !empty($frequencyInterval) && ($this->contributionIsPayLater || $this->isGoCardless)) {
       $result = $this->contributionRecur($params, 'deferred');
     }
     else {
@@ -1983,6 +1997,10 @@ class wf_crm_webform_postprocess extends wf_crm_webform_base {
 
     $params['source'] = $this->settings['new_contact_source'];
     $params['item_name'] = $params['description'] = t('Webform Payment: @title', ['@title' => $this->node->title]);
+
+    if ($this->isGoCardless) {
+      $params['contribution_recur_id'] = $this->ent['contribution_recur'][1]['id'];
+    }
 
     // We need the submitted billing params from the request (Eg. billing_country_id-5)
     //  because that's how payment processors expect to find them.
