@@ -2076,6 +2076,81 @@ class wf_crm_webform_postprocess extends wf_crm_webform_base {
   }
 
   /**
+   * Determine if recurring parameters need to be added to the form parameters.
+   *
+   *  - is_recur
+   *  - frequency_interval
+   *  - frequency_unit
+   *
+   * @param array $contributionParams
+   *
+   * For membership this is based on the membership type.
+   */
+  private function setRecurringMembershipParams(&$contributionParams) {
+    if (empty($this->data['membership'])) {
+      return;
+    }
+    $contributionData = &$this->data['contribution'][1]['contribution'][1];
+    $isRecur = ($this->isGoCardless === TRUE || wf_crm_aval($contributionParams, 'frequency_unit'));
+    foreach ($this->data['membership'] as $membership) {
+      if (empty($membership['membership'])) {
+        continue;
+      }
+      foreach ($membership['membership'] as $type) {
+        if (empty($type['membership_type_id'])) {
+          continue;
+        }
+        $membershipTypeDetails = $this->getMembershipType(
+          $type['membership_type_id']
+        );
+        if (
+          // 2 means required
+          $membershipTypeDetails['auto_renew'] === 2
+          // 1 means optional - so they must also select the check box on the form
+          || ($membershipTypeDetails['auto_renew'] === 1 && $isRecur === TRUE)
+        ) {
+          $membershipNumTerms = $type['num_terms'] ?? 1;
+          $membershipDurationInterval = $membershipTypeDetails['duration_interval'] ?? 1;
+          $frequencyinterval = ($membershipNumTerms * $membershipDurationInterval);
+
+          if (!empty($contributionParams['frequency_interval'])
+            && $contributionParams['frequency_interval'] != $frequencyinterval
+          ) {
+            throw new Exception(ts('Frequency interval is inconsistent for selected membership type.'));
+          }
+
+          if (!empty($contributionParams['frequency_unit'])
+            && $contributionParams['frequency_unit'] != $membershipTypeDetails['duration_unit']
+          ) {
+            throw new Exception(ts('Frequency unit is inconsistent for selected membership type.'));
+          }
+
+          $contributionData['frequency_interval'] = $contributionParams['frequency_interval'] = $frequencyinterval;
+          $contributionData['frequency_unit'] = $contributionParams['frequency_unit'] = $membershipTypeDetails['duration_unit'];
+        }
+      }
+    }
+  }
+
+  /**
+   * Get Membership type details
+   *
+   * @param int $membershipTypeId
+   *
+   * @return array
+   */
+  private function getMembershipType(int $membershipTypeId): array {
+    static $membershipTypeDetails;
+    if (empty($membershipTypeDetails[$membershipTypeId])) {
+      $membershipTypeDetails[$membershipTypeId] = CRM_Member_BAO_MembershipType::getMembershipType(
+        $membershipTypeId
+      );
+    }
+
+    return $membershipTypeDetails[$membershipTypeId] ?? [];
+  }
+
+  /**
    * Format contribution params for transact/pay-later
    * @return array
    */
@@ -2153,6 +2228,8 @@ class wf_crm_webform_postprocess extends wf_crm_webform_base {
 
     // Save this stuff for later
     unset($params['soft'], $params['honor_contact_id'], $params['honor_type_id']);
+
+    $this->setRecurringMembershipParams($params);
     return $params;
   }
 
